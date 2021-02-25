@@ -1,0 +1,423 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+*1) DATA INSPECTION AND CLEANING*
+```{r}
+#Importing required Libraries
+library(tidyverse) 
+library(MASS)
+library(car)
+library(e1071)
+library(caret)
+library(cowplot)
+library(caTools)
+library(pROC)
+library(ggcorrplot)
+
+#Importing the dataframe
+setwd("C:/Users/kisha/Desktop")
+churn<- read.csv(file="DATAMINING.csv", header=TRUE, sep=",")
+```
+
+
+```{r}
+#Visualizing number of missing values (NA's) in each column of the dataframe
+options(repr.plot.width = 6, repr.plot.height = 4)
+missing_data <- churn %>% summarise_all(funs(sum(is.na(.))/n()))
+missing_data <- gather(missing_data, key = "variables", value = "percent_missing")
+ggplot(missing_data, aes(x = reorder(variables, percent_missing), y = percent_missing)) +
+geom_bar(stat = "identity", fill = "red", aes(color = I('white')), size = 0.3)+
+xlab('variables')+
+coord_flip()+ 
+theme_bw()
+```
+There are 11 missing values in the TotalCharges field, we will use KNN to impute missing values in this column. There are three continuous variables and they are Tenure, MonthlyCharges and TotalCharges. SeniorCitizen is in 'int' form, that can be changed to categorical.
+
+```{r}
+#KNN for imputing the missing values
+library(DMwR)
+churn <- knnImputation(churn[, !names(churn) %in% "medv"])  
+sapply(churn,function(x)sum(is.na(x)))
+
+#Checking for missing values after applying KNN, we can see that there are no missing values present now.
+anyNA(churn)
+
+#Converting senior citizen to factor form
+churn <- churn[complete.cases(churn),]
+churn$SeniorCitizen <- as.factor(ifelse(churn$SeniorCitizen==1, 'YES', 'NO'))
+```
+```{r}
+#Removing customerID since it is unique.
+churn$customerID <- NULL
+
+#Data Wrangling
+summary(churn)
+#We will change "No Internet service" to "No" for 6 columns: "Online Security","Online Backup","Device Protection","TechSupport","streamingTV,"streamingMovies".
+
+churn$OnlineSecurity<-gsub("No internet service","No",churn$OnlineSecurity)
+churn$OnlineBackup<-gsub("No internet service","No",churn$OnlineBackup)
+churn$DeviceProtection<-gsub("No internet service","No",churn$DeviceProtection)
+churn$TechSupport<-gsub("No internet service","No",churn$TechSupport)
+churn$StreamingTV<-gsub("No internet service","No",churn$StreamingTV)
+churn$StreamingMovies<-gsub("No internet service","No",churn$StreamingMovies)
+
+#We will change "No Phone Service" to "No" for "MultipleLines" column.
+churn$MultipleLines<-gsub("No phone service","No",churn$MultipleLines)
+```
+
+*2)EXPLORATORY DATA ANALYSIS*
+```{r}
+#Plotting Churn ratio 
+library(ggplot2)
+library(scales)
+temp<-churn%>%
+  group_by(Churn) %>%
+  summarize(Count = n())
+
+#Bar plot displaying the percentage of customers who have churned w.r.t percentage of customers who have not churned
+ggplot(temp, aes(x=Churn,y=Count,fill=Churn))+geom_bar(stat = "identity") + geom_text(aes(label=percent_format()(round(Count,2)/7032)),color="black" ,nudge_y = 200)
+```
+We can see that the churn ratio between yes and no is uneven. We will be performing oversampling on the training data before implementing model to get rid of this problem.
+```{r}
+options(repr.plot.width = 12, repr.plot.height = 8)
+plot_grid(ggplot(churn, aes(x=gender,fill=Churn))+ geom_bar()+ theme_minimal(),
+          ggplot(churn, aes(x=SeniorCitizen,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal(),
+          ggplot(churn, aes(x=Partner,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          align = "h")
+         plot_grid(ggplot(churn, aes(x=Dependents,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal(),
+          ggplot(churn, aes(x=PhoneService,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal(),
+          ggplot(churn, aes(x=MultipleLines,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          align = "h")
+```
+Gender - The churn percent is almost equal in case of Male and Females. The percent of churn is higher in case of senior citizens. Customers with Partners and Dependents have lower churn rate as compared to those who don't have partners & Dependents.
+
+```{r}
+options(repr.plot.width = 12, repr.plot.height = 8)
+plot_grid(ggplot(churn, aes(x=InternetService,fill=Churn))+ geom_bar(position = 'fill')+ theme_minimal()+
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 10)), 
+          ggplot(churn, aes(x=OnlineSecurity,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          ggplot(churn, aes(x=OnlineBackup,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          align = "h")
+
+          plot_grid(ggplot(churn, aes(x=DeviceProtection,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          ggplot(churn, aes(x=TechSupport,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          ggplot(churn, aes(x=StreamingTV,fill=Churn))+ geom_bar(position = 'fill')+theme_minimal()+
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 10)),
+          align = "h")
+```
+Churn rate is much higher for Fiber Optic InternetServices. Customers who do not have services like No OnlineSecurity , OnlineBackup and TechSupport have slightly higher churn rate.
+```{r}
+#Converting binary categorical variable into numerical variables
+churn$Partner=ifelse(churn$Partner=="Yes",1,0)
+churn$Dependents=ifelse(churn$Dependents=="Yes",1,0)
+churn$PhoneService=ifelse(churn$PhoneService=="Yes",1,0)
+churn$MultipleLines=ifelse(churn$MultipleLines=="Yes",1,0)
+churn$InternetService=ifelse(churn$InternetService=="Yes",1,0)
+churn$OnlineSecurity=ifelse(churn$OnlineSecurity=="Yes",1,0)
+churn$OnlineBackup=ifelse(churn$OnlineBackup=="Yes",1,0)
+churn$DeviceProtection=ifelse(churn$DeviceProtection=="Yes",1,0)
+churn$TechSupport=ifelse(churn$TechSupport=="Yes",1,0)
+churn$StreamingTV=ifelse(churn$StreamingTV=="Yes",1,0)
+churn$StreamingMovies=ifelse(churn$StreamingMovies=="Yes",1,0)
+churn$PaperlessBilling=ifelse(churn$PaperlessBilling=="Yes",1,0)
+churn$Churn=ifelse(churn$Churn=="Yes",1,0)
+churn$gender=ifelse(churn$gender=="Male",1,0)
+
+
+#Checking for outliers
+options(repr.plot.width=4, repr.plot.height=4)
+boxplot(churn$tenure,main ="tenure",col = "orange")$out
+boxplot(churn$MonthlyCharges,main="Monthly Charges",col = "green")$out
+boxplot(churn$TotalCharges,main="Total Charges",col="light blue")$out
+
+```
+After looking at the boxplots we can see none of the values are beyond the whiskers, hence we can conclude there are no outliers.
+```{r}
+# Since the minimum tenure is 1 month and maximum tenure is 72 months, we can group them into five tenure groups: “0–12 Month”, “12–24 Month”, “24–48 Months”, “48–60 Month”, “> 60 Month” by creating a funtion
+
+group_tenure <- function(tenure){
+    if (tenure >= 0 & tenure <= 12){
+        return('0-12 Month')
+    }else if(tenure > 12 & tenure <= 24){
+        return('12-24 Month')
+    }else if (tenure > 24 & tenure <= 48){
+        return('24-48 Month')
+    }else if (tenure > 48 & tenure <=60){
+        return('48-60 Month')
+    }else if (tenure > 60){
+        return('> 60 Month')
+    }
+}
+
+#Adding tenure_group variable using function above
+churn$tenure_group <- sapply(churn$tenure,group_tenure)
+churn$tenure_group <- as.factor(churn$tenure_group)
+
+#Deleting original variable
+churn$tenure<-NULL
+```
+
+
+```{r}
+#Plotting a grid of bar charts for online securiy, phone service, security and senior citizen
+library(grid)
+library(gridExtra)
+p5 <- ggplot(churn, aes(x=PhoneService)) + ggtitle("Phone Service") + xlab("Phone Service") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p6 <- ggplot(churn, aes(x=MultipleLines)) + ggtitle("Multiple Lines") + xlab("Multiple Lines") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p7 <- ggplot(churn, aes(x=SeniorCitizen)) + ggtitle("Senior Citizen") + xlab("Senior Citizen") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p8 <- ggplot(churn, aes(x=OnlineSecurity)) + ggtitle("Online Security") + xlab("Online Security") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p5, p6, p7, p8, ncol=2)
+```
+From above barplots we can conclude following: The number of people having phone servics is high, on the other hand number of senior citizen is low. The bar plot for other two variables do not show such high contrast.
+```{r}
+#Checking the correlation between continuous variables.
+options(repr.plot.width =6, repr.plot.height = 4)
+telco_cor <- round(cor(churn[,c("MonthlyCharges", "TotalCharges")]), 1)
+
+ggcorrplot(telco_cor,  title = "Correlation")+theme(plot.title = element_text(hjust = 0.5))
+```
+Total Charges has positive correlation with MonthlyCharges. Hence we remove total charges.
+```{r}
+churn$TotalCharges<-NULL
+
+#Scaling the variable Monthly Charges
+churn["MonthlyCharges"] <- sapply(churn["MonthlyCharges"], as.numeric)
+
+churn_int <- churn["MonthlyCharges"]
+churn["MonthlyCharges"] <- scale(churn_int)
+```
+
+```{r}
+#Creating dataframe containing all non-numeric variables
+non_numeric <- churn[,c(14,16,19)]
+
+#Creating Dummy Variables for converting categorical variable to numerical
+dummy<- data.frame(sapply(non_numeric,function(x) data.frame(model.matrix(~x-1,data =non_numeric))[,-1]))
+ 
+#Adding dummmy variables into dataset
+dummy_final <- cbind(churn,dummy)
+
+#removing unwanted variables
+dummy_final$Contract <- NULL
+dummy_final$PaymentMethod <- NULL
+dummy_final$tenure_group <- NULL
+```
+*3) MODEL BUILDING*
+```{r}
+#Splitting the data
+set.seed(123)
+indices = sample.split(dummy_final$Churn, SplitRatio = 0.7)
+train1 = dummy_final[indices,]
+validation = dummy_final[!(indices),]
+
+
+#Performing oversampling since churn ratio is uneven between "Yes"(74%) and "No(26%) as seen while performing exploratory data analysis
+library(ROSE)
+train <- ovun.sample(Churn ~ ., data = train1, method = "both", N= 7229, seed=1)$data
+table(train$Churn)
+```
+*3a) MODEL 1: Logistic Regression*
+```{r}
+#Build the first model using all variables
+model_1 = glm(Churn ~ ., data = train, family = "binomial")
+summary(model_1)
+```
+```{r}
+#Using stepAIC for variable selection, which is a iterative process of adding or removing variables, in order to get a subset of variables that gives the best performing model.
+model_2<- stepAIC(model_1, direction="both")
+```
+```{r}
+summary(model_2)
+```
+```{r}
+#We can use variance inflation factor (vif) to get rid of redundant predictors or the variables that have high multicollinearity between them. 
+vif(model_2)
+```
+```{r}
+#Based on the results of model_2 we get rid of variables streamingTV and streamingMovies
+model_3 <- glm(formula = Churn ~ SeniorCitizen + Dependents + PhoneService + 
+    MultipleLines + OnlineSecurity + OnlineBackup + 
+    DeviceProtection + TechSupport + PaperlessBilling + MonthlyCharges + Contract.xOne.year + 
+    Contract.xTwo.year + 
+    PaymentMethod.xElectronic.check + 
+    tenure_group.x0.12.Month + tenure_group.x12.24.Month + tenure_group.x24.48.Month , family = "binomial", data = train)
+
+summary(model_3)
+vif(model_3)
+```
+```{r}
+final_model <- model_3
+
+pred <- predict(final_model, type = "response", newdata = validation[,-16])
+summary(pred)
+validation$prob <- pred
+
+# Using probability cutoff of 0.5.
+
+pred_churn <- factor(ifelse(pred >= 0.50, "Yes", "No"))
+actual_churn <- factor(ifelse(validation$Churn==1,"Yes","No"))
+table(actual_churn,pred_churn)
+```
+```{r}
+cutoff_churn <- factor(ifelse(pred >=0.50, "Yes", "No"))
+conf_final <- confusionMatrix(cutoff_churn, actual_churn, positive = "Yes")
+accuracy <- conf_final$overall[1]
+sensitivity <- conf_final$byClass[1]
+specificity <- conf_final$byClass[2]
+accuracy
+sensitivity
+specificity
+```
+We can see that the accuracy is 73.7% for logistic regression model with an arbitrary cutoff value of 0.5
+```{r}
+perform_fn <- function(cutoff) 
+{
+  predicted_churn <- factor(ifelse(pred >= cutoff, "Yes", "No"))
+  conf <- confusionMatrix(predicted_churn, actual_churn, positive = "Yes")
+  accuray <- conf$overall[1]
+  sensitivity <- conf$byClass[1]
+  specificity <- conf$byClass[2]
+  out <- t(as.matrix(c(sensitivity, specificity, accuray))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+```
+
+```{r}
+#Plotting sensitivity vs specificity vs accuracy graph to determine optimal cut-off for this model.
+options(repr.plot.width =8, repr.plot.height =6)
+summary(pred)
+s = seq(0.01,0.80,length=100)
+OUT = matrix(0,100,3)
+
+for(i in 1:100)
+{
+  OUT[i,] = perform_fn(s[i])
+} 
+
+plot(s, OUT[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),
+     type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT[,2],col="darkgreen",lwd=2)
+lines(s,OUT[,3],col=4,lwd=2)
+box()
+legend("bottom",col=c(2,"darkgreen",4,"darkred"),text.font =3,inset = 0.02,
+       box.lty=0,cex = 0.8, 
+       lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+abline(v = 0.538, col="red", lwd=1, lty=2)
+axis(1, at = seq(0.1, 1, by = 0.1))
+```
+We can see that the cutoff value where all three lines meet is at 0.538
+```{r}
+#Let's choose a cutoff value of 0.538 for final model, where the three curves for accuracy, specificty and sensitivity meet
+
+cutoff_churn <- factor(ifelse(pred >=0.538, "Yes", "No"))
+conf_final <- confusionMatrix(cutoff_churn, actual_churn, positive = "Yes")
+accuracy <- conf_final$overall[1]
+sensitivity <- conf_final$byClass[1]
+specificity <- conf_final$byClass[2]
+accuracy
+sensitivity
+specificity
+
+pred_churn1 <- factor(ifelse(pred >= 0.538, "Yes", "No"))
+actual_churn1 <- factor(ifelse(validation$Churn==1,"Yes","No"))
+table(actual_churn1,pred_churn1)
+```
+We can see that the accuracy has improved to 75.10%
+*3b) DECISION TREE*
+```{r}
+set.seed(123)
+dummy_final$Churn <- as.factor(dummy_final$Churn)
+
+indices = sample.split(dummy_final$Churn, SplitRatio = 0.7)
+train = dummy_final[indices,]
+validation = dummy_final[!(indices),]
+```
+
+```{r}
+library(rpart)
+library(rattle)
+library(rpart.plot)
+
+#Training
+Dtree = rpart(Churn ~., data = train, method = "class")
+summary(Dtree)
+
+prp(Dtree)
+dev.new()
+fancyRpartPlot(Dtree, main="Decision Tree Graph")
+
+#Predicting 
+DTPred <- predict(Dtree,type = "class", newdata = validation[,-16])
+```
+```{r}
+confusionMatrix(validation$Churn, DTPred)
+```
+The decision tree model (accuracy - 77.1%) gives slightly better accuracy with respect to the logistic regression model (accuracy 75%). The sensitivity is also better in case of Decision tree which is 80%. However, the specificity has decreased to 66% in case of Decision Tree as compared to logistic regression model.
+
+*3b) RANDOM FORESTS*
+```{r}
+library(randomForest)
+set.seed(123)
+dummy_final$Churn <- as.factor(dummy_final$Churn)
+
+indices = sample.split(dummy_final$Churn, SplitRatio = 0.7)
+train = dummy_final[indices,]
+validation = dummy_final[!(indices),]
+```
+
+```{r}
+model.rf <- randomForest(Churn ~ ., data=train, proximity=FALSE,importance = FALSE,
+                        ntree=500,mtry=4, do.trace=FALSE)
+model.rf
+```
+
+```{r}
+#Predicting on the validation set and checking the Confusion Matrix.
+testPred <- predict(model.rf, newdata=validation[,-16])
+table(testPred, validation$Churn)
+
+confusionMatrix(validation$Churn, testPred)
+```
+The basic RandomForest model gives an accuracy of 77.28%( almost close enough to decision tree estimate), Sensitivity 82.13% and Specificity 59.10%.
+```{r}
+#Checking the variable Importance Plot
+varImpPlot(model.rf)
+
+```
+
+```{r}
+#Checking the Area Under Curve(AUC) for all three models implemented above 
+options(repr.plot.width =10, repr.plot.height = 8)
+
+glm.roc <- roc(response = validation$Churn, predictor = as.numeric(pred))
+DT.roc <- roc(response = validation$Churn, predictor = as.numeric(DTPred))
+rf.roc <- roc(response = validation$Churn, predictor = as.numeric(testPred))
+
+plot(glm.roc,      legacy.axes = TRUE, print.auc.y = 1.0, print.auc = TRUE)
+plot(DT.roc, col = "blue", add = TRUE, print.auc.y = 0.65, print.auc = TRUE)
+plot(rf.roc, col = "red" , add = TRUE, print.auc.y = 0.85, print.auc = TRUE)
+legend("bottom", c("Random Forest", "Decision Tree", "Logistic"),
+       lty = c(1,1), lwd = c(2, 2), col = c("red", "blue", "black"), cex = 0.75)
+```
+We can see that the Area Under Curve(AUC) for Logistic Regression Model is the highest at 0.830 followed by Random Forest (0.676) and Decision Tree (0.635)
+
